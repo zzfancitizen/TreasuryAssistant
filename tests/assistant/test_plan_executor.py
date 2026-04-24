@@ -19,6 +19,16 @@ class RecordingA2AClient:
         }
 
 
+class FakeLLMClient:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.messages: list[list[dict[str, str]]] = []
+
+    async def complete(self, messages: list[dict[str, str]], **kwargs) -> str:
+        self.messages.append(messages)
+        return self.response
+
+
 def build_registry_with_risk_agent() -> AgentRegistry:
     endpoints = AgentRegistry.default_local().list()
     endpoints.append(
@@ -243,3 +253,42 @@ async def test_executor_context_is_budgeted_and_dependency_scoped() -> None:
     assert "dependency_results" in client.calls[1][2]
     assert "previous_results" not in client.calls[1][2]
     assert client.calls[1][2]["context_budget"]["estimated_tokens"] <= 120
+
+
+async def test_executor_uses_llm_context_compression_when_configured() -> None:
+    client = RecordingA2AClient(
+        {
+            "cash_agent": {
+                "agent": "CashAgent",
+                "status": "completed",
+                "summary": "x" * 1000,
+                "data": {"liquidity_gap": 5_000_000, "currency": "CNY", "large_payload": "y" * 5000},
+            }
+        }
+    )
+    llm = FakeLLMClient("缺口500万CNY")
+    executor = PlanExecutor(
+        registry=AgentRegistry.default_local(),
+        a2a_client=client,
+        max_context_tokens=260,
+        compression_llm_client=llm,
+    )
+    plan = RoutePlan(
+        intent="liquidity_analysis",
+        confidence=0.8,
+        execution_mode="sequential",
+        steps=[
+            AgentStep(skill_id="forecast_cashflow", task="Assess cash safety"),
+            AgentStep(
+                skill_id="analyze_liquidity_gap",
+                task="Analyze liquidity gap",
+                depends_on=["forecast_cashflow"],
+            ),
+        ],
+        can_replan=False,
+    )
+
+    await executor.execute(plan, "帮我看下这两周能不能撑过去")
+
+    assert llm.messages
+    assert client.calls[1][2]["context_budget"]["compression_strategy"] == "llm"

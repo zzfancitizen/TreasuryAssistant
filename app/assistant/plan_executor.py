@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from app.assistant.continuation import ContinuationDecider
 from app.assistant.context_builder import ContextBuilder
+from app.assistant.context_compressor import CompressionLLMClient
 from app.memory import ExecutionState, InMemoryMemoryService, MemoryService
 from app.assistant.plan_validator import PlanValidator
 from app.assistant.planner import AgentStep, RoutePlan
@@ -35,11 +36,15 @@ class PlanExecutor:
         continuation_decider: ContinuationDecider | None = None,
         memory_service: MemoryService | None = None,
         max_context_tokens: int = 200_000,
+        compression_llm_client: CompressionLLMClient | None = None,
     ) -> None:
         self.registry = registry
         self.skill_registry = SkillRegistry.from_agent_registry(registry)
         self.plan_validator = PlanValidator(skill_registry=self.skill_registry)
-        self.context_builder = ContextBuilder(max_context_tokens=max_context_tokens)
+        self.context_builder = ContextBuilder(
+            max_context_tokens=max_context_tokens,
+            compression_llm_client=compression_llm_client,
+        )
         self.memory_service = memory_service or InMemoryMemoryService()
         self.a2a_client = a2a_client
         self.continuation_decider = continuation_decider or ContinuationDecider()
@@ -149,7 +154,7 @@ class PlanExecutor:
         state.start_step(step)
         skill = self.skill_registry.get(step.skill_id)
         endpoint = self.registry.get(skill.provider_agent_id)
-        context = self.context_builder.build(state=state, step=step, skill=skill)
+        context = await self.context_builder.build_async(state=state, step=step, skill=skill)
         logger.info(
             "plan_executor.step.invoke",
             extra={

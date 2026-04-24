@@ -54,7 +54,8 @@ Execution state, memory, context, and human-in-the-loop handling are explicit:
 
 - `app/memory/state.py` stores task status, current step, step results, extracted facts, artifact refs, and pending human actions.
 - `app/memory/store.py` provides the `MemoryService` interface; the current implementation is in-memory and can be replaced with a remote memory service, Redis, or Postgres later.
-- `app/assistant/context_builder.py` builds minimal subagent context from the current step dependencies instead of passing full conversation history. It defaults to a 200k-token budget and truncates large summaries/data/artifact refs before invoking A2A agents.
+- `app/assistant/context_builder.py` builds minimal subagent context from the current step dependencies instead of passing full conversation history. It defaults to a 200k-token budget.
+- `app/assistant/context_compressor.py` applies two-layer compression before invoking A2A agents: deterministic structured compression first, then optional LLM semantic compression when a compression LLM is configured and structured compression is still too large.
 - `app/assistant/result_normalizer.py` standardizes subagent pauses into `await_input` and `await_confirm`.
 - `app/assistant/turn_classifier.py` classifies user turns as pending-action answers, follow-ups, memory queries, corrections, or new tasks.
 

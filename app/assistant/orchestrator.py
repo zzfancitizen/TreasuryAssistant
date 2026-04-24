@@ -40,7 +40,11 @@ class TreasuryAssistantOrchestrator:
         self.registry = registry
         self.a2a_client = a2a_client
         self.route_planner = route_planner or RoutePlanner(registry=registry)
-        self.plan_executor = PlanExecutor(registry=registry, a2a_client=a2a_client)
+        self.plan_executor = PlanExecutor(
+            registry=registry,
+            a2a_client=a2a_client,
+            compression_llm_client=llm_client,
+        )
         self.llm_client = llm_client
         self.graph = self._build_graph()
 

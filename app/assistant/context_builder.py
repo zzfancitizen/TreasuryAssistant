@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from app.memory import ExecutionState
+from app.assistant.context_compressor import CompressionLLMClient, ContextCompressor
 from app.assistant.planner import AgentStep
 from app.core.skill_registry import SkillDescriptor
 
@@ -12,13 +12,49 @@ logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    def __init__(self, *, max_context_tokens: int = 200_000, chars_per_token: int = 4) -> None:
+    def __init__(
+        self,
+        *,
+        max_context_tokens: int = 200_000,
+        chars_per_token: int = 4,
+        compression_llm_client: CompressionLLMClient | None = None,
+    ) -> None:
         self.max_context_tokens = max_context_tokens
         self.max_context_chars = max_context_tokens * chars_per_token
         self.chars_per_token = chars_per_token
+        self.compressor = ContextCompressor(
+            max_context_tokens=max_context_tokens,
+            chars_per_token=chars_per_token,
+            llm_client=compression_llm_client,
+        )
 
     def build(self, *, state: ExecutionState, step: AgentStep, skill: SkillDescriptor) -> dict[str, Any]:
-        context = {
+        return self._fit_budget(self._base_context(state=state, step=step, skill=skill))
+
+    async def build_async(self, *, state: ExecutionState, step: AgentStep, skill: SkillDescriptor) -> dict[str, Any]:
+        context = self._base_context(state=state, step=step, skill=skill)
+        compressed = await self.compressor.compress(context)
+        if compressed["context_budget"]["compression_strategy"] == "none":
+            logger.info(
+                "context_builder.context.within_budget",
+                extra={
+                    "estimated_tokens": compressed["context_budget"]["estimated_tokens"],
+                    "max_tokens": self.max_context_tokens,
+                },
+            )
+        else:
+            logger.warning(
+                "context_builder.context.compressed",
+                extra={
+                    "estimated_tokens": compressed["context_budget"]["estimated_tokens"],
+                    "max_tokens": self.max_context_tokens,
+                    "compression_strategy": compressed["context_budget"]["compression_strategy"],
+                },
+            )
+        return compressed
+
+    def _base_context(self, *, state: ExecutionState, step: AgentStep, skill: SkillDescriptor) -> dict[str, Any]:
+        return {
             "task_id": state.task_id,
             "user_goal": state.user_goal,
             "current_step": step.model_dump(),
@@ -47,12 +83,12 @@ class ContextBuilder:
                 "truncated": False,
             },
         }
-        return self._fit_budget(context)
 
     def _fit_budget(self, context: dict[str, Any]) -> dict[str, Any]:
-        estimated_tokens = self.estimate_tokens(context)
+        estimated_tokens = self.compressor.estimate_tokens(context)
         if estimated_tokens <= self.max_context_tokens:
             context["context_budget"]["estimated_tokens"] = estimated_tokens
+            context["context_budget"]["compression_strategy"] = "none"
             logger.info(
                 "context_builder.context.within_budget",
                 extra={"estimated_tokens": estimated_tokens, "max_tokens": self.max_context_tokens},
@@ -72,20 +108,21 @@ class ContextBuilder:
             "truncated": True,
         }
 
-        while self.estimate_tokens(truncated) > self.max_context_tokens and truncated["facts"]:
+        while self.compressor.estimate_tokens(truncated) > self.max_context_tokens and truncated["facts"]:
             truncated["facts"].pop()
-        while self.estimate_tokens(truncated) > self.max_context_tokens and truncated["artifacts"]:
+        while self.compressor.estimate_tokens(truncated) > self.max_context_tokens and truncated["artifacts"]:
             truncated["artifacts"].pop()
-        if self.estimate_tokens(truncated) > self.max_context_tokens:
+        if self.compressor.estimate_tokens(truncated) > self.max_context_tokens:
             truncated["dependency_results"] = {
                 skill_id: {"status": result.get("status"), "summary": self._clip(str(result.get("summary", "")), 120)}
                 for skill_id, result in truncated["dependency_results"].items()
             }
 
         truncated["context_budget"]["estimated_tokens"] = min(
-            self.estimate_tokens(truncated),
+            self.compressor.estimate_tokens(truncated),
             self.max_context_tokens,
         )
+        truncated["context_budget"]["compression_strategy"] = "trim"
         logger.warning(
             "context_builder.context.truncated",
             extra={
@@ -96,8 +133,7 @@ class ContextBuilder:
         return truncated
 
     def estimate_tokens(self, payload: dict[str, Any]) -> int:
-        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-        return max(1, len(serialized) // self.chars_per_token)
+        return self.compressor.estimate_tokens(payload)
 
     def _summarize_result(self, result: dict[str, Any]) -> dict[str, Any]:
         return {

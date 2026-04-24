@@ -4,6 +4,16 @@ from app.assistant.planner import AgentStep, RoutePlan
 from app.core.skill_registry import SkillDescriptor
 
 
+class FakeLLMClient:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.messages: list[list[dict[str, str]]] = []
+
+    async def complete(self, messages: list[dict[str, str]], **kwargs) -> str:
+        self.messages.append(messages)
+        return self.response
+
+
 def build_plan() -> RoutePlan:
     return RoutePlan(
         intent="liquidity_analysis",
@@ -69,3 +79,26 @@ def test_context_builder_respects_token_budget() -> None:
     assert context["context_budget"]["max_tokens"] == 80
     assert context["context_budget"]["estimated_tokens"] <= 80
     assert context["context_budget"]["truncated"] is True
+
+
+async def test_context_builder_uses_llm_compression_when_configured() -> None:
+    plan = build_plan()
+    state = ExecutionState.create(user_goal="分析资金情况", plan=plan)
+    state.record_step_result(
+        "forecast_cashflow",
+        {
+            "status": "completed",
+            "summary": "x" * 1000,
+            "data": {"liquidity_gap": 5_000_000, "currency": "CNY", "large_payload": "y" * 5000},
+        },
+    )
+    llm = FakeLLMClient("缺口500万CNY")
+
+    context = await ContextBuilder(max_context_tokens=260, compression_llm_client=llm).build_async(
+        state=state,
+        step=plan.steps[1],
+        skill=SkillDescriptor(skill_id="analyze_liquidity_gap", provider_agent_id="treasury_agent", name="Analyze"),
+    )
+
+    assert llm.messages
+    assert context["context_budget"]["compression_strategy"] == "llm"
