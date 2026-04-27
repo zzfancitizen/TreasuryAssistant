@@ -5,6 +5,10 @@ services:
     command: uv run --no-dev uvicorn app.cash.server:app --host 0.0.0.0 --port 8001
     environment:
       UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     volumes:
       - .:/workspace
       - uv-cache:/root/.cache/uv
@@ -33,6 +37,10 @@ services:
     command: uv run --no-dev uvicorn app.treasury.server:app --host 0.0.0.0 --port 8002
     environment:
       UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     volumes:
       - .:/workspace
       - uv-cache:/root/.cache/uv
@@ -66,6 +74,10 @@ services:
       AGENT_REGISTRY_PATH: app/config/agents.docker.yaml
       AGENT_PUBLIC_URL: http://localhost:8000/
       UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     volumes:
       - .:/workspace
       - uv-cache:/root/.cache/uv
@@ -99,6 +111,10 @@ services:
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     environment:
       VITE_AGENT_API_PROXY_TARGET: http://assistant:8000
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     volumes:
       - .:/workspace
       - frontend-node-modules:/workspace/frontend/node_modules
