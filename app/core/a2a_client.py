@@ -20,13 +20,21 @@ class A2AClient:
         message: str,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                endpoint.url,
-                json=build_message_send_request(message, context=context),
-            )
-            response.raise_for_status()
-            return parse_message_send_response(response.json())
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    endpoint.url,
+                    json=build_message_send_request(message, context=context),
+                )
+                response.raise_for_status()
+                return parse_message_send_response(response.json())
+        except httpx.HTTPError as exc:
+            return {
+                "agent": endpoint.name,
+                "status": "failed",
+                "summary": f"{endpoint.name} request failed: {exc.__class__.__name__}",
+                "data": {"endpoint_url": endpoint.url},
+            }
 
     async def stream(
         self,
@@ -92,7 +100,14 @@ def parse_message_send_response(payload: dict[str, Any]) -> dict[str, Any]:
     text = parts[0].get("text")
     if not text:
         return result
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "status": result.get("status", {}).get("state", "completed") if isinstance(result.get("status"), dict) else "completed",
+            "summary": text,
+            "raw_result": result,
+        }
 
 
 def parse_sse_data_line(line: str) -> dict[str, Any] | None:

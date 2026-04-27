@@ -60,23 +60,41 @@ class RoutePlanner:
         logger.info("route_planner.plan.started", extra={"message_length": len(message)})
         rule_plan = plan_by_rules(message)
         if rule_plan is not None:
+            normalized_rule_plan = normalize_plan(rule_plan, skill_registry=self.skill_registry)
             logger.info(
                 "route_planner.plan.rule_matched",
-                extra={"intent": rule_plan.intent, "execution_mode": rule_plan.execution_mode, "step_count": len(rule_plan.steps)},
+                extra={
+                    "intent": normalized_rule_plan.intent,
+                    "execution_mode": normalized_rule_plan.execution_mode,
+                    "step_count": len(normalized_rule_plan.steps),
+                },
             )
-            return rule_plan
+            return normalized_rule_plan
 
         if self.llm_client is None:
             logger.info("route_planner.plan.no_llm_fallback")
-            return general_parallel_plan(reason="No keyword matched and no LLM planner is configured.")
+            return fallback_plan_for_supported_skills(
+                self.skill_registry,
+                reason="No keyword matched and no LLM planner is configured.",
+            )
 
-        llm_plan = await self._plan_with_llm(message)
+        try:
+            llm_plan = await self._plan_with_llm(message)
+        except Exception:
+            logger.exception("route_planner.plan.llm_error")
+            return fallback_plan_for_supported_skills(
+                self.skill_registry,
+                reason="LLM route failed; using supported discovered skills.",
+            )
         if llm_plan is None or llm_plan.confidence < self.min_confidence or not llm_plan.steps:
             logger.warning(
                 "route_planner.plan.llm_fallback",
                 extra={"has_plan": llm_plan is not None, "confidence": llm_plan.confidence if llm_plan else None},
             )
-            return general_parallel_plan(reason="LLM route was missing or below confidence threshold.")
+            return fallback_plan_for_supported_skills(
+                self.skill_registry,
+                reason="LLM route was missing or below confidence threshold.",
+            )
         normalized = normalize_plan(llm_plan, skill_registry=self.skill_registry)
         logger.info(
             "route_planner.plan.completed",
@@ -102,9 +120,71 @@ class RoutePlanner:
 
 def plan_by_rules(message: str) -> RoutePlan | None:
     normalized = message.lower()
-    cash_keywords = ("余额", "流水", "账户", "现金流", "balance", "cash")
+    dynamic_keywords = ("动态编排", "动态进行agent编排", "dynamic orchestration", "dynamic")
+    parallel_keywords = ("并发编排", "并发执行", "parallel orchestration", "parallel")
+    cash_keywords = ("余额", "流水", "账户", "现金", "现金流", "balance", "cash")
     treasury_keywords = ("融资", "策略", "限额", "风控", "funding", "policy")
     liquidity_keywords = ("缺口", "调拨", "流动性", "liquidity", "transfer")
+    read_keywords = ("读取", "读", "查看状态", "read")
+    change_keywords = ("修改", "变更", "调整", "change", "update")
+
+    if any(keyword in normalized for keyword in dynamic_keywords):
+        return RoutePlan(
+            intent="dynamic_liquidity_check",
+            confidence=1.0,
+            execution_mode="single",
+            steps=[AgentStep(skill_id="forecast_cashflow", task="Assess cash safety for dynamic orchestration")],
+            can_replan=True,
+            replan_triggers=["liquidity_gap_detected"],
+            reason="Matched dynamic orchestration case keywords.",
+        )
+
+    if any(keyword in normalized for keyword in parallel_keywords):
+        return RoutePlan(
+            intent="general",
+            confidence=1.0,
+            execution_mode="parallel",
+            steps=[
+                AgentStep(skill_id="forecast_cashflow", task="Provide cash context for parallel orchestration"),
+                AgentStep(skill_id="analyze_liquidity_gap", task="Provide treasury context for parallel orchestration"),
+            ],
+            reason="Matched parallel orchestration case keywords.",
+        )
+
+    if any(keyword in normalized for keyword in read_keywords):
+        if any(keyword in normalized for keyword in cash_keywords):
+            return RoutePlan(
+                intent="cash_read",
+                confidence=1.0,
+                execution_mode="single",
+                steps=[AgentStep(skill_id="read_cash_state", task="Read mock cash runtime state")],
+                reason="Matched cash read keywords.",
+            )
+        if any(keyword in normalized for keyword in treasury_keywords):
+            return RoutePlan(
+                intent="treasury_read",
+                confidence=1.0,
+                execution_mode="single",
+                steps=[AgentStep(skill_id="read_treasury_state", task="Read mock treasury runtime state")],
+                reason="Matched treasury read keywords.",
+            )
+    if any(keyword in normalized for keyword in change_keywords):
+        if any(keyword in normalized for keyword in cash_keywords):
+            return RoutePlan(
+                intent="cash_change",
+                confidence=1.0,
+                execution_mode="single",
+                steps=[AgentStep(skill_id="change_cash_state", task="Prepare mock cash runtime state change")],
+                reason="Matched cash change keywords.",
+            )
+        if any(keyword in normalized for keyword in treasury_keywords):
+            return RoutePlan(
+                intent="treasury_change",
+                confidence=1.0,
+                execution_mode="single",
+                steps=[AgentStep(skill_id="change_treasury_state", task="Prepare mock treasury runtime state change")],
+                reason="Matched treasury change keywords.",
+            )
 
     if any(keyword in normalized for keyword in liquidity_keywords):
         return RoutePlan(
@@ -134,7 +214,7 @@ def plan_by_rules(message: str) -> RoutePlan | None:
             intent="treasury",
             confidence=1.0,
             execution_mode="single",
-            steps=[AgentStep(skill_id="recommend_funding_plan", task="Handle treasury-related request")],
+            steps=[AgentStep(skill_id="analyze_liquidity_gap", task="Handle treasury-related request")],
             reason="Matched treasury keywords.",
         )
     return None
@@ -153,13 +233,60 @@ def general_parallel_plan(reason: str) -> RoutePlan:
     )
 
 
+def unavailable_plan(reason: str) -> RoutePlan:
+    return RoutePlan(
+        intent="unavailable",
+        confidence=0.0,
+        execution_mode="single",
+        steps=[],
+        can_replan=False,
+        needs_clarification=True,
+        clarification_question="No A2A subagent skills are currently discoverable.",
+        reason=reason,
+    )
+
+
+def fallback_plan_for_supported_skills(skill_registry: SkillRegistry, *, reason: str) -> RoutePlan:
+    known_skills = {skill.skill_id for skill in skill_registry.list()}
+    if {"forecast_cashflow", "analyze_liquidity_gap"}.issubset(known_skills):
+        return general_parallel_plan(reason=reason)
+    if "get_cash_balance" in known_skills:
+        return RoutePlan(
+            intent="cash",
+            confidence=0.35,
+            execution_mode="single",
+            steps=[AgentStep(skill_id="get_cash_balance", task="Provide available cash context for the user request")],
+            reason=reason,
+        )
+    if "analyze_liquidity_gap" in known_skills:
+        return RoutePlan(
+            intent="treasury",
+            confidence=0.35,
+            execution_mode="single",
+            steps=[AgentStep(skill_id="analyze_liquidity_gap", task="Provide treasury context for the user request")],
+            reason=reason,
+        )
+    return unavailable_plan(reason=reason)
+
+
 def normalize_plan(plan: RoutePlan, *, skill_registry: SkillRegistry) -> RoutePlan:
     validator = PlanValidator(skill_registry=skill_registry)
     steps = validator.supported_steps(plan)
     if not steps:
-        return general_parallel_plan(reason="LLM route had no supported skills.")
+        return fallback_plan_for_supported_skills(skill_registry, reason="Route had no supported discovered skills.")
 
-    supported_intents = {"cash", "treasury", "liquidity_analysis", "general"}
+    supported_intents = {
+        "cash",
+        "treasury",
+        "liquidity_analysis",
+        "general",
+        "unavailable",
+        "cash_read",
+        "cash_change",
+        "treasury_read",
+        "treasury_change",
+        "dynamic_liquidity_check",
+    }
     intent = plan.intent if plan.intent in supported_intents else "general"
     candidate = plan.model_copy(update={"intent": intent, "steps": steps})
     try:

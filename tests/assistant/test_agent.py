@@ -14,7 +14,7 @@ class RecordingA2AClient:
 
 async def test_assistant_agent_invokes_orchestrator() -> None:
     orchestrator = TreasuryAssistantOrchestrator(
-        registry=AgentRegistry.default_local(),
+        registry=AgentRegistry.default_builtin(),
         a2a_client=RecordingA2AClient(),
     )
     agent = TreasuryAssistantAgent(orchestrator=orchestrator)

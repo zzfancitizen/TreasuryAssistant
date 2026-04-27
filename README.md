@@ -22,7 +22,7 @@ A2A Client
 CashAgent       TreasuryAgent
 ```
 
-`app/main.py` publishes the `TreasuryAssistant` A2A service. `app/agent_executor.py` adapts A2A requests to the Assistant. `app/assistant/agent.py` is the Assistant's main business entrypoint. LLM calls are centralized through `app/core/llm_client.py` using LiteLLM, so third-party model providers can be changed without touching agent orchestration logic.
+`app/main.py` publishes the `TreasuryAssistant` A2A service. `app/agent_executor.py` adapts A2A requests to the Assistant, including A2A `message/stream` SSE status events. `app/assistant/agent.py` is the Assistant's main business entrypoint. LLM calls are centralized through `app/core/llm_client.py` using LiteLLM, so third-party model providers can be changed without touching agent orchestration logic.
 
 Assistant prompts live in `app/assistant/prompts.py`:
 
@@ -34,7 +34,7 @@ Assistant prompts live in `app/assistant/prompts.py`:
 Routing is handled by `app/assistant/planner.py`:
 
 - High-confidence treasury keywords use a deterministic fast path.
-- Requests without obvious keywords use a LiteLLM-backed structured route planner when `LITELLM_MODEL` is configured.
+- Requests without obvious keywords use a LiteLLM-backed structured route planner when `LITELLM_MODEL` and an API key are configured.
 - Low-confidence or invalid LLM plans fall back to a conservative general plan that queries both subagents in parallel.
 
 Plan validation is handled by `app/assistant/plan_validator.py`:
@@ -112,12 +112,36 @@ uv run uvicorn app.treasury.server:app --port 8002
 uv run uvicorn app.main:app --port 8000
 ```
 
-To enable LLM-based routing for non-keyword requests:
+Or start the whole test stack with Docker Compose:
 
 ```bash
-export LITELLM_MODEL=your-provider/your-model
-export LLM_API_KEY=your-provider-key
+docker compose up --build
 ```
+
+This starts:
+
+- `cash-agent` on `http://localhost:8001`
+- `treasury-agent` on `http://localhost:8002`
+- `assistant` on `http://localhost:8000`
+- `frontend` on `http://localhost:5173`
+
+The assistant container uses `app/config/agents.docker.yaml` so A2A discovery
+targets Compose service names instead of host-local `localhost`.
+Python services install runtime dependencies with `uv run --no-dev`; set
+`UV_INDEX_URL` before running Compose if your Docker containers need a specific
+package index or mirror.
+
+To enable LLM-based routing for non-keyword requests with OpenRouter/Qwen through LiteLLM, put the key in `.env`:
+
+```dotenv
+OPENROUTER_API_KEY=sk-or-your-openrouter-key
+LITELLM_API_BASE=https://openrouter.ai/api/v1
+LITELLM_MODEL=openrouter/qwen/qwen3.5-plus-20260420
+```
+
+`TreasuryAssistant` only enables LiteLLM when both `LITELLM_MODEL` and an API key
+(`OPENROUTER_API_KEY`, `LITELLM_API_KEY`, or `OPENAI_API_KEY`) are present, so a
+placeholder `.env` will not break local mock-agent tests.
 
 Agent cards are available at:
 

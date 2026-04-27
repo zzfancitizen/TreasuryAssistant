@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from app.core.registry import AgentRegistry, build_endpoint_from_agent_card
 
 
@@ -116,3 +118,37 @@ agents:
     assert [endpoint.agent_id for endpoint in registry.list()] == ["report_agent"]
     log_error.assert_called_once()
     assert log_error.call_args.args == ("agent_registry.discovery.failed",)
+
+
+def test_default_registry_uses_seed_endpoint_metadata_when_discovery_fails(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "agents.yaml"
+    config_path.write_text(
+        """
+agents:
+  - agent_id: report_agent
+    name: ReportAgent
+    url: http://localhost:8004
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("AGENT_REGISTRY_PATH", raising=False)
+
+    with patch("app.core.registry.fetch_agent_card", side_effect=RuntimeError("down")):
+        registry = AgentRegistry.default_local(config_path=config_path)
+
+    endpoint = registry.get("report_agent")
+    assert endpoint.name == "ReportAgent"
+    assert endpoint.url == "http://localhost:8004"
+    assert endpoint.capabilities == ()
+    assert endpoint.skills == ()
+
+
+def test_default_agent_config_contains_only_discovery_seeds() -> None:
+    payload = yaml.safe_load(Path("app/config/agents.yaml").read_text(encoding="utf-8"))
+
+    assert payload == {
+        "agents": [
+            {"agent_id": "cash_agent", "url": "http://localhost:8001"},
+            {"agent_id": "treasury_agent", "url": "http://localhost:8002"},
+        ]
+    }

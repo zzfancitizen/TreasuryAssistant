@@ -36,20 +36,20 @@ class AgentExecutor(SDKAgentExecutor):
 
         logger.info(
             "assistant.request.received",
-            extra={
-                "context_id": task.context_id,
-                "task_id": task.id,
-                "user_input": query[:500] if query else "",
-            },
-        )
+                extra={
+                    "context_id": task.context_id,
+                    "task_id": task.id,
+                    "user_input_length": len(query or ""),
+                },
+            )
         updater = TaskUpdater(event_queue, task.id, task.context_id)
 
         try:
             await updater.start_work()
             payload = None
             result = None
-            async for event in self.agent.stream(query):
-                if event.event_type == "working":
+            async for event in self.agent.stream(query, context_id=task.context_id):
+                if event.event_type != "completed":
                     await updater.update_status(
                         TaskState.working,
                         new_agent_text_message(event.message, task.context_id, task.id),

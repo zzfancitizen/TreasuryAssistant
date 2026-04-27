@@ -49,14 +49,12 @@ class AgentRegistry:
                     extra={"config_path": str(path), "agent_count": len(registry.list())},
                 )
                 return registry
-            except httpx.HTTPError:
+            except Exception:
                 log = logger.error if explicit_path else logger.warning
                 log(
                     "agent_registry.discovery.failed",
                     extra={"config_path": str(path), "explicit_path": explicit_path},
                 )
-                if not explicit_path:
-                    return cls.default_builtin()
                 return cls.from_yaml(path)
         logger.warning("agent_registry.config.missing", extra={"config_path": str(path)})
         return cls.default_builtin()
@@ -70,23 +68,27 @@ class AgentRegistry:
                     agent_id="cash_agent",
                     name="CashAgent",
                     url="http://localhost:8001",
-                    capabilities=(
-                        "get_cash_balance",
-                        "get_bank_accounts",
-                        "get_cash_transactions",
-                        "forecast_cashflow",
-                    ),
+	                capabilities=(
+	                    "get_cash_balance",
+	                    "get_bank_accounts",
+	                    "get_cash_transactions",
+	                    "forecast_cashflow",
+	                    "read_cash_state",
+	                    "change_cash_state",
+	                ),
                 ),
                 AgentEndpoint(
                     agent_id="treasury_agent",
                     name="TreasuryAgent",
                     url="http://localhost:8002",
-                    capabilities=(
-                        "analyze_liquidity_gap",
-                        "recommend_funding_plan",
-                        "recommend_cash_transfer",
-                        "check_treasury_risk",
-                    ),
+	                capabilities=(
+	                    "analyze_liquidity_gap",
+	                    "recommend_funding_plan",
+	                    "recommend_cash_transfer",
+	                    "check_treasury_risk",
+	                    "read_treasury_state",
+	                    "change_treasury_state",
+	                ),
                 ),
             ]
         )

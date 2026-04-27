@@ -1,0 +1,126 @@
+services:
+  cash-agent:
+    image: ghcr.io/astral-sh/uv:python3.13-bookworm
+    working_dir: /workspace
+    command: uv run --no-dev uvicorn app.cash.server:app --host 0.0.0.0 --port 8001
+    environment:
+      UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    volumes:
+      - .:/workspace
+      - uv-cache:/root/.cache/uv
+      - python-venv:/workspace/.venv
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "--no-dev",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/.well-known/agent-card.json', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  treasury-agent:
+    image: ghcr.io/astral-sh/uv:python3.13-bookworm
+    working_dir: /workspace
+    command: uv run --no-dev uvicorn app.treasury.server:app --host 0.0.0.0 --port 8002
+    environment:
+      UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    volumes:
+      - .:/workspace
+      - uv-cache:/root/.cache/uv
+      - python-venv:/workspace/.venv
+    depends_on:
+      cash-agent:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "--no-dev",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8002/.well-known/agent-card.json', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  assistant:
+    image: ghcr.io/astral-sh/uv:python3.13-bookworm
+    working_dir: /workspace
+    command: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      AGENT_REGISTRY_PATH: app/config/agents.docker.yaml
+      AGENT_PUBLIC_URL: http://localhost:8000/
+      UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    volumes:
+      - .:/workspace
+      - uv-cache:/root/.cache/uv
+      - python-venv:/workspace/.venv
+    ports:
+      - "8000:8000"
+    depends_on:
+      cash-agent:
+        condition: service_healthy
+      treasury-agent:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "--no-dev",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/.well-known/agent-card.json', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  frontend:
+    image: node:22-bookworm-slim
+    working_dir: /workspace/frontend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_AGENT_API_PROXY_TARGET: http://assistant:8000
+    volumes:
+      - .:/workspace
+      - frontend-node-modules:/workspace/frontend/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      assistant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:5173').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  uv-cache:
+  python-venv:
+  frontend-node-modules:

@@ -11,13 +11,14 @@ from app.core.logging_config import configure_logging
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
+DEFAULT_PUBLIC_HOST = "localhost" if HOST in {"0.0.0.0", "::"} else HOST
 
 configure_logging()
 
 agent_card = build_agent_card(
     name="TreasuryAssistant",
     description="Super agent for treasury business orchestration via A2A subagents.",
-    url=os.environ.get("AGENT_PUBLIC_URL") or f"http://{HOST}:{PORT}/",
+    url=os.environ.get("AGENT_PUBLIC_URL") or f"http://{DEFAULT_PUBLIC_HOST}:{PORT}/",
     skills=[
         build_skill(
             skill_id="answer_treasury_questions",

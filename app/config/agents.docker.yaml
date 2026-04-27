@@ -1,0 +1,6 @@
+agents:
+  - agent_id: cash_agent
+    url: http://cash-agent:8001
+
+  - agent_id: treasury_agent
+    url: http://treasury-agent:8002

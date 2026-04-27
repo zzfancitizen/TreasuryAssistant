@@ -30,6 +30,8 @@ def test_cash_server_exposes_agent_card() -> None:
 
     assert response.status_code == 200
     assert response.json()["name"] == "CashAgent"
+    skill_ids = {skill["id"] for skill in response.json()["skills"]}
+    assert {"read_cash_state", "change_cash_state"}.issubset(skill_ids)
 
 
 def test_cash_server_accepts_a2a_message_send() -> None:

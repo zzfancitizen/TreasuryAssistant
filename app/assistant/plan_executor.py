@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from app.assistant.continuation import ContinuationDecider
 from app.assistant.context_builder import ContextBuilder
@@ -11,10 +11,13 @@ from app.memory import ExecutionState, InMemoryMemoryService, MemoryService
 from app.assistant.plan_validator import PlanValidator
 from app.assistant.planner import AgentStep, RoutePlan
 from app.assistant.result_normalizer import normalize_agent_result, result_with_human_action
+from app.assistant.turn_classifier import classify_user_turn
 from app.core.registry import AgentEndpoint, AgentRegistry
 from app.core.skill_registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class A2AInvoker(Protocol):
@@ -49,9 +52,16 @@ class PlanExecutor:
         self.a2a_client = a2a_client
         self.continuation_decider = continuation_decider or ContinuationDecider()
 
-    async def execute(self, plan: RoutePlan, user_message: str) -> list[dict[str, Any]]:
+    async def execute(
+        self,
+        plan: RoutePlan,
+        user_message: str,
+        *,
+        task_id: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[dict[str, Any]]:
         plan = self.plan_validator.normalize(plan)
-        state = ExecutionState.create(user_goal=user_message, plan=plan)
+        state = ExecutionState.create(user_goal=user_message, plan=plan, task_id=task_id)
         self.memory_service.save(state)
         logger.info(
             "plan_executor.execute.started",
@@ -64,10 +74,59 @@ class PlanExecutor:
         )
         has_dependencies = any(step.depends_on for step in plan.steps)
         if plan.execution_mode == "parallel" and not has_dependencies:
-            return await self._execute_parallel(state)
-        return await self._execute_sequential(state)
+            return await self._execute_parallel(state, progress_callback=progress_callback)
+        return await self._execute_sequential(state, progress_callback=progress_callback)
 
-    async def _execute_parallel(self, state: ExecutionState) -> list[dict[str, Any]]:
+    async def resume_pending_human_action(self, task_id: str, user_message: str) -> list[dict[str, Any]]:
+        state = self.memory_service.get(task_id)
+        if state is None or state.pending_human_action is None:
+            return [{"status": "failed", "summary": "No pending human action exists for this context."}]
+
+        turn = classify_user_turn(user_message, state)
+        if turn.decision == "reject":
+            state.complete()
+            self.memory_service.save(state)
+            return [{"status": "completed", "summary": "Pending action was rejected by the user."}]
+        if turn.decision != "approve":
+            return [
+                {
+                    "status": state.status,
+                    "summary": state.pending_human_action.question,
+                    "human_action": state.pending_human_action.model_dump(),
+                }
+            ]
+
+        state.pending_human_action = None
+        state.status = "executing"
+        ordered_steps = [
+            step
+            for step in order_steps_by_dependencies(state.plan.steps)
+            if step.skill_id not in state.step_results
+        ]
+        if not ordered_steps:
+            state.complete()
+            self.memory_service.save(state)
+            return []
+        return await self._execute_sequential_steps(
+            state,
+            ordered_steps=ordered_steps,
+            completed_iterations=len(state.step_results),
+            progress_callback=None,
+        )
+
+    async def _execute_parallel(
+        self,
+        state: ExecutionState,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[dict[str, Any]]:
+        for step in state.plan.steps:
+            await self._emit_progress(
+                progress_callback,
+                state=state,
+                event_type="step_started",
+                step=step,
+            )
         calls = [
             self._invoke_step(
                 step,
@@ -81,6 +140,15 @@ class PlanExecutor:
             normalized = normalize_agent_result(skill_id, result)
             output = result_with_human_action(normalized)
             state.record_step_result(skill_id, output)
+            step = next((candidate for candidate in state.plan.steps if candidate.skill_id == skill_id), None)
+            if step is not None:
+                await self._emit_progress(
+                    progress_callback,
+                    state=state,
+                    event_type="step_completed",
+                    step=step,
+                    result=output,
+                )
             if normalized.human_action:
                 state.set_pending_human_action(normalized.human_action)
             outputs.append(output)
@@ -93,13 +161,37 @@ class PlanExecutor:
         )
         return outputs
 
-    async def _execute_sequential(self, state: ExecutionState) -> list[dict[str, Any]]:
-        ordered_steps = order_steps_by_dependencies(state.plan.steps)
+    async def _execute_sequential(
+        self,
+        state: ExecutionState,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._execute_sequential_steps(
+            state,
+            ordered_steps=order_steps_by_dependencies(state.plan.steps),
+            completed_iterations=0,
+            progress_callback=progress_callback,
+        )
+
+    async def _execute_sequential_steps(
+        self,
+        state: ExecutionState,
+        *,
+        ordered_steps: list[AgentStep],
+        completed_iterations: int,
+        progress_callback: ProgressCallback | None,
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        completed_iterations = 0
 
         while ordered_steps:
             step = ordered_steps.pop(0)
+            await self._emit_progress(
+                progress_callback,
+                state=state,
+                event_type="step_started",
+                step=step,
+            )
             skill_id, result = await self._invoke_step(
                 step,
                 state=state,
@@ -110,6 +202,13 @@ class PlanExecutor:
             results.append(output)
             completed_iterations += 1
             self.memory_service.save(state)
+            await self._emit_progress(
+                progress_callback,
+                state=state,
+                event_type="step_completed",
+                step=step,
+                result=output,
+            )
 
             if normalized.human_action:
                 state.set_pending_human_action(normalized.human_action)
@@ -136,6 +235,13 @@ class PlanExecutor:
                 break
             if decision.action == "insert_step" and decision.step is not None:
                 ordered_steps.insert(0, decision.step)
+                await self._emit_progress(
+                    progress_callback,
+                    state=state,
+                    event_type="step_inserted",
+                    step=decision.step,
+                    reason=decision.reason,
+                )
         if not state.pending_human_action:
             state.complete()
             self.memory_service.save(state)
@@ -144,6 +250,39 @@ class PlanExecutor:
             extra={"task_id": state.task_id, "status": state.status, "result_count": len(results)},
         )
         return results
+
+    async def _emit_progress(
+        self,
+        progress_callback: ProgressCallback | None,
+        *,
+        state: ExecutionState,
+        event_type: str,
+        step: AgentStep,
+        result: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if progress_callback is None:
+            return
+        skill = self.skill_registry.get(step.skill_id)
+        payload: dict[str, Any] = {
+            "event_type": event_type,
+            "task_id": state.task_id,
+            "execution_mode": state.plan.execution_mode,
+            "intent": state.plan.intent,
+            "skill_id": step.skill_id,
+            "task": step.task,
+            "depends_on": step.depends_on,
+            "agent_id": skill.provider_agent_id,
+            "agent_name": self.registry.get(skill.provider_agent_id).name,
+        }
+        if result is not None:
+            payload["status"] = result.get("status", "completed")
+            payload["summary"] = result.get("summary", "")
+            if result.get("human_action"):
+                payload["human_action"] = result["human_action"]
+        if reason:
+            payload["reason"] = reason
+        await progress_callback(payload)
 
     async def _invoke_step(
         self,

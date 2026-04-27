@@ -46,6 +46,31 @@ def test_parse_message_send_response_extracts_json_artifact() -> None:
     }
 
 
+def test_parse_message_send_response_preserves_plain_text_artifact() -> None:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "request-1",
+        "result": {
+            "artifacts": [
+                {
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "plain treasury response",
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+
+    assert parse_message_send_response(payload) == {
+        "status": "completed",
+        "summary": "plain treasury response",
+        "raw_result": payload["result"],
+    }
+
+
 def test_parse_sse_data_line_extracts_jsonrpc_event() -> None:
     event = parse_sse_data_line('data: {"jsonrpc": "2.0", "result": {"kind": "status-update"}}')
 

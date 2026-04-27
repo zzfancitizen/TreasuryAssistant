@@ -30,6 +30,8 @@ def test_treasury_server_exposes_agent_card() -> None:
 
     assert response.status_code == 200
     assert response.json()["name"] == "TreasuryAgent"
+    skill_ids = {skill["id"] for skill in response.json()["skills"]}
+    assert {"read_treasury_state", "change_treasury_state"}.issubset(skill_ids)
 
 
 def test_treasury_server_accepts_a2a_message_send() -> None:

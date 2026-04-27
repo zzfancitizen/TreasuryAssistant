@@ -7,7 +7,7 @@ from app.core.skill_registry import SkillRegistry
 
 
 def build_validator() -> PlanValidator:
-    return PlanValidator(skill_registry=SkillRegistry.from_agent_registry(AgentRegistry.default_local()))
+    return PlanValidator(skill_registry=SkillRegistry.from_agent_registry(AgentRegistry.default_builtin()))
 
 
 def test_normalizes_execution_mode_from_dependencies() -> None:

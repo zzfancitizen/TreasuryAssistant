@@ -21,7 +21,7 @@ class RecordingA2AClient:
 
 
 def build_orchestrator() -> tuple[TreasuryAssistantOrchestrator, RecordingA2AClient]:
-    registry = AgentRegistry.default_local()
+    registry = AgentRegistry.default_builtin()
     client = RecordingA2AClient()
     return TreasuryAssistantOrchestrator(registry=registry, a2a_client=client), client
 
@@ -89,20 +89,55 @@ async def test_stream_emits_step_level_progress_and_final_result() -> None:
 
     events = [event async for event in orchestrator.stream("请综合分析当前财资状况")]
 
-    assert [event.event_type for event in events] == [
-        "working",
-        "working",
-        "working",
-        "working",
-        "completed",
+    step_events = [event for event in events if event.event_type in {"step_started", "step_completed"}]
+
+    assert [event.event_type for event in step_events] == [
+        "step_started",
+        "step_started",
+        "step_completed",
+        "step_completed",
     ]
+    assert {event.metadata["skill_id"] for event in step_events} == {"forecast_cashflow", "analyze_liquidity_gap"}
+    assert {event.metadata["execution_mode"] for event in step_events} == {"parallel"}
     assert events[-1].result is not None
     assert events[-1].result.intent == "general"
     assert sorted(call[0] for call in client.calls) == ["cash_agent", "treasury_agent"]
 
 
+async def test_stream_emits_dynamic_step_insertion() -> None:
+    registry = AgentRegistry.default_builtin()
+    client = RecordingA2AClient(
+        {
+            "cash_agent": {
+                "agent": "CashAgent",
+                "status": "completed",
+                "data": {"liquidity_gap": 5_000_000, "currency": "CNY"},
+                "summary": "Projected liquidity gap detected.",
+            }
+        }
+    )
+    planner = FixedRoutePlanner(
+        RoutePlan(
+            intent="dynamic_liquidity_check",
+            confidence=1.0,
+            execution_mode="single",
+            steps=[AgentStep(skill_id="forecast_cashflow", task="Assess cash safety for dynamic orchestration")],
+            replan_triggers=["liquidity_gap_detected"],
+        )
+    )
+    orchestrator = TreasuryAssistantOrchestrator(registry=registry, a2a_client=client, route_planner=planner)
+
+    events = [event async for event in orchestrator.stream("动态编排：先读取现金流，如果发现资金缺口再追加融资计划")]
+
+    inserted_events = [event for event in events if event.event_type == "step_inserted"]
+    assert len(inserted_events) == 1
+    assert inserted_events[0].metadata["skill_id"] == "recommend_funding_plan"
+    assert inserted_events[0].metadata["depends_on"] == ["forecast_cashflow"]
+    assert [call[0] for call in client.calls] == ["cash_agent", "treasury_agent"]
+
+
 async def test_no_keyword_request_can_follow_llm_generated_plan() -> None:
-    registry = AgentRegistry.default_local()
+    registry = AgentRegistry.default_builtin()
     client = RecordingA2AClient()
     planner = FixedRoutePlanner(
         RoutePlan(
@@ -133,7 +168,7 @@ async def test_no_keyword_request_can_follow_llm_generated_plan() -> None:
 
 
 async def test_synthesizer_uses_llm_prompt_when_client_is_configured() -> None:
-    registry = AgentRegistry.default_local()
+    registry = AgentRegistry.default_builtin()
     client = RecordingA2AClient()
     llm = FakeLLMClient("LLM synthesized treasury answer")
     orchestrator = TreasuryAssistantOrchestrator(
@@ -150,7 +185,7 @@ async def test_synthesizer_uses_llm_prompt_when_client_is_configured() -> None:
 
 
 async def test_orchestrator_surfaces_await_confirm_result() -> None:
-    registry = AgentRegistry.default_local()
+    registry = AgentRegistry.default_builtin()
     client = RecordingA2AClient(
         {
             "cash_agent": {
@@ -180,3 +215,48 @@ async def test_orchestrator_surfaces_await_confirm_result() -> None:
     assert result.human_action is not None
     assert result.human_action["action_id"] == "approval-1"
     assert result.summary == "是否确认继续？"
+
+
+async def test_orchestrator_resumes_pending_confirmation_by_context_id() -> None:
+    registry = AgentRegistry.default_builtin()
+    client = RecordingA2AClient(
+        {
+            "cash_agent": {
+                "status": "await_confirm",
+                "summary": "需要确认",
+                "approval_request": {
+                    "approval_id": "approval-1",
+                    "question": "是否确认继续？",
+                    "options": ["approve", "reject"],
+                },
+            },
+            "treasury_agent": {
+                "status": "completed",
+                "summary": "已完成调拨建议",
+            },
+        }
+    )
+    planner = FixedRoutePlanner(
+        RoutePlan(
+            intent="liquidity_analysis",
+            confidence=0.8,
+            execution_mode="sequential",
+            steps=[
+                AgentStep(skill_id="forecast_cashflow", task="Assess cash safety"),
+                AgentStep(
+                    skill_id="analyze_liquidity_gap",
+                    task="Analyze liquidity gap",
+                    depends_on=["forecast_cashflow"],
+                ),
+            ],
+        )
+    )
+    orchestrator = TreasuryAssistantOrchestrator(registry=registry, a2a_client=client, route_planner=planner)
+
+    first = await orchestrator.invoke("帮我看下这两周能不能撑过去", context_id="context-1")
+    resumed = await orchestrator.invoke("确认，可以执行", context_id="context-1")
+
+    assert first.status == "await_confirm"
+    assert resumed.status == "completed"
+    assert resumed.summary == "已完成调拨建议"
+    assert [call[0] for call in client.calls] == ["cash_agent", "treasury_agent"]

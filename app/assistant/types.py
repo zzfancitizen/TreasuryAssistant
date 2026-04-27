@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AssistantResult(BaseModel):
@@ -16,4 +16,5 @@ class AssistantResult(BaseModel):
 class AssistantStreamEvent(BaseModel):
     event_type: str
     message: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     result: AssistantResult | None = None

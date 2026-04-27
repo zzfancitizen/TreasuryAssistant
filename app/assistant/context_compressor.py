@@ -40,6 +40,7 @@ class ContextCompressor:
                     extra={"estimated_tokens": self.estimate_tokens(llm_compressed), "max_tokens": self.max_context_tokens},
                 )
                 return llm_compressed
+            return self._hard_trim(llm_compressed, strategy="llm")
         except Exception as exc:
             logger.error("context_compressor.llm_failed", extra={"error": str(exc)})
 

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
-
 from app.assistant.orchestrator import TreasuryAssistantOrchestrator
 from app.assistant.planner import RoutePlanner
 from app.assistant.types import AssistantResult, AssistantStreamEvent
 from app.core.a2a_client import A2AClient
-from app.core.llm_client import LiteLLMClient
+from app.core.llm_client import LiteLLMClient, is_litellm_configured
 from app.core.registry import AgentRegistry
 
 
@@ -19,21 +17,21 @@ class TreasuryAssistantAgent:
         if self._orchestrator is None:
             registry = AgentRegistry.default_local()
             route_planner = None
-            if os.getenv("LITELLM_MODEL"):
+            if is_litellm_configured():
                 route_planner = RoutePlanner(registry=registry, llm_client=LiteLLMClient())
             self._orchestrator = TreasuryAssistantOrchestrator(
                 registry=registry,
                 a2a_client=A2AClient(),
                 route_planner=route_planner,
-                llm_client=LiteLLMClient() if os.getenv("LITELLM_MODEL") else None,
+                llm_client=LiteLLMClient() if is_litellm_configured() else None,
             )
         return self._orchestrator
 
-    async def invoke(self, message: str) -> AssistantResult:
-        return await self.orchestrator.invoke(message)
+    async def invoke(self, message: str, *, context_id: str | None = None) -> AssistantResult:
+        return await self.orchestrator.invoke(message, context_id=context_id)
 
-    async def stream(self, message: str):
-        async for event in self.orchestrator.stream(message):
+    async def stream(self, message: str, *, context_id: str | None = None):
+        async for event in self.orchestrator.stream(message, context_id=context_id):
             yield event
 
 
